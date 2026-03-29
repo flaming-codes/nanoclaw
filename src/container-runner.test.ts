@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { spawn } from 'child_process';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -8,6 +9,9 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  ANTHROPIC_AUTH_TOKEN: 'ollama',
+  ANTHROPIC_BASE_URL: 'http://host.docker.internal:11434',
+  CLAUDE_MODEL: 'minimax-m2.7:cloud',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
@@ -225,5 +229,31 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('passes configured Ollama model and endpoint into the container', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    const spawnMock = vi.mocked(spawn);
+    expect(spawnMock).toHaveBeenCalled();
+    const [, containerArgs] = spawnMock.mock.calls[0];
+
+    expect(containerArgs).toContain('ANTHROPIC_AUTH_TOKEN=ollama');
+    expect(containerArgs).toContain(
+      'ANTHROPIC_BASE_URL=http://host.docker.internal:11434',
+    );
+    expect(containerArgs).toContain('CLAUDE_MODEL=minimax-m2.7:cloud');
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'configured',
+      newSessionId: 'session-configured',
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
   });
 });

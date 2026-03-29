@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR } from './config.js';
+import { CLAUDE_MODEL, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 interface RemoteControlSession {
@@ -15,6 +15,11 @@ interface RemoteControlSession {
 
 let activeSession: RemoteControlSession | null = null;
 
+const OLLAMA_BIN = 'ollama';
+const OLLAMA_LAUNCH_SUBCOMMAND = 'launch';
+const OLLAMA_REMOTE_CONTROL_TARGET = 'claude';
+const REMOTE_CONTROL_COMMAND = 'remote-control';
+const REMOTE_CONTROL_NAME = 'NanoClaw Remote';
 const URL_REGEX = /https:\/\/claude\.ai\/code\S+/;
 const URL_TIMEOUT_MS = 30_000;
 const URL_POLL_MS = 200;
@@ -109,11 +114,24 @@ export async function startRemoteControl(
 
   let proc;
   try {
-    proc = spawn('claude', ['remote-control', '--name', 'NanoClaw Remote'], {
-      cwd,
-      stdio: ['pipe', stdoutFd, stderrFd],
-      detached: true,
-    });
+    proc = spawn(
+      OLLAMA_BIN,
+      [
+        OLLAMA_LAUNCH_SUBCOMMAND,
+        OLLAMA_REMOTE_CONTROL_TARGET,
+        '--model',
+        CLAUDE_MODEL,
+        '--',
+        REMOTE_CONTROL_COMMAND,
+        '--name',
+        REMOTE_CONTROL_NAME,
+      ],
+      {
+        cwd,
+        stdio: ['pipe', stdoutFd, stderrFd],
+        detached: true,
+      },
+    );
   } catch (err: any) {
     fs.closeSync(stdoutFd);
     fs.closeSync(stderrFd);

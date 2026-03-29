@@ -7,6 +7,9 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  ANTHROPIC_AUTH_TOKEN,
+  ANTHROPIC_BASE_URL,
+  CLAUDE_MODEL,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -232,6 +235,12 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Ollama configuration — SDK uses ANTHROPIC_BASE_URL for custom endpoints.
+  // AUTH_TOKEN is required by the SDK but ignored by Ollama.
+  args.push('-e', `ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}`);
+  args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
+  args.push('-e', `CLAUDE_MODEL=${CLAUDE_MODEL}`);
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.

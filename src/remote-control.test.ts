@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock config before importing the module under test
 vi.mock('./config.js', () => ({
+  CLAUDE_MODEL: 'minimax-m2.7:cloud',
   DATA_DIR: '/tmp/nanoclaw-rc-test',
 }));
 
@@ -96,8 +97,17 @@ describe('remote-control', () => {
         url: 'https://claude.ai/code?bridge=env_abc123',
       });
       expect(spawnMock).toHaveBeenCalledWith(
-        'claude',
-        ['remote-control', '--name', 'NanoClaw Remote'],
+        'ollama',
+        [
+          'launch',
+          'claude',
+          '--model',
+          'minimax-m2.7:cloud',
+          '--',
+          'remote-control',
+          '--name',
+          'NanoClaw Remote',
+        ],
         expect.objectContaining({ cwd: '/project', detached: true }),
       );
       expect(proc.unref).toHaveBeenCalled();

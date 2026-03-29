@@ -5,18 +5,38 @@ import { readEnvFile } from './env.js';
 import { isValidTimezone } from './timezone.js';
 
 // Read config values from .env (falls back to process.env).
+const ENV_KEY_ASSISTANT_NAME = 'ASSISTANT_NAME';
+const ENV_KEY_ASSISTANT_HAS_OWN_NUMBER = 'ASSISTANT_HAS_OWN_NUMBER';
+const ENV_KEY_ONECLI_URL = 'ONECLI_URL';
+const ENV_KEY_CLAUDE_MODEL = 'CLAUDE_MODEL';
+const ENV_KEY_ANTHROPIC_BASE_URL = 'ANTHROPIC_BASE_URL';
+const ENV_KEY_ANTHROPIC_AUTH_TOKEN = 'ANTHROPIC_AUTH_TOKEN';
+const ENV_KEY_TIMEZONE = 'TZ';
+
+export const DEFAULT_ASSISTANT_NAME = 'Andy';
+export const DEFAULT_CONTAINER_IMAGE = 'nanoclaw-agent:latest';
+export const DEFAULT_ONECLI_URL = 'http://localhost:10254';
+export const DEFAULT_CLAUDE_MODEL = 'minimax-m2.7:cloud';
+export const DEFAULT_OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
+export const DEFAULT_OLLAMA_AUTH_TOKEN = 'ollama';
+
 const envConfig = readEnvFile([
-  'ASSISTANT_NAME',
-  'ASSISTANT_HAS_OWN_NUMBER',
-  'ONECLI_URL',
-  'TZ',
+  ENV_KEY_ASSISTANT_NAME,
+  ENV_KEY_ASSISTANT_HAS_OWN_NUMBER,
+  ENV_KEY_ONECLI_URL,
+  ENV_KEY_CLAUDE_MODEL,
+  ENV_KEY_ANTHROPIC_BASE_URL,
+  ENV_KEY_ANTHROPIC_AUTH_TOKEN,
+  ENV_KEY_TIMEZONE,
 ]);
 
 export const ASSISTANT_NAME =
-  process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
+  process.env[ENV_KEY_ASSISTANT_NAME] ||
+  envConfig[ENV_KEY_ASSISTANT_NAME] ||
+  DEFAULT_ASSISTANT_NAME;
 export const ASSISTANT_HAS_OWN_NUMBER =
-  (process.env.ASSISTANT_HAS_OWN_NUMBER ||
-    envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+  (process.env[ENV_KEY_ASSISTANT_HAS_OWN_NUMBER] ||
+    envConfig[ENV_KEY_ASSISTANT_HAS_OWN_NUMBER]) === 'true';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -42,7 +62,7 @@ export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
-  process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+  process.env.CONTAINER_IMAGE || DEFAULT_CONTAINER_IMAGE;
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,
@@ -52,7 +72,21 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   10,
 ); // 10MB default
 export const ONECLI_URL =
-  process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
+  process.env[ENV_KEY_ONECLI_URL] ||
+  envConfig[ENV_KEY_ONECLI_URL] ||
+  DEFAULT_ONECLI_URL;
+export const CLAUDE_MODEL =
+  process.env[ENV_KEY_CLAUDE_MODEL] ||
+  envConfig[ENV_KEY_CLAUDE_MODEL] ||
+  DEFAULT_CLAUDE_MODEL;
+export const ANTHROPIC_BASE_URL =
+  process.env[ENV_KEY_ANTHROPIC_BASE_URL] ||
+  envConfig[ENV_KEY_ANTHROPIC_BASE_URL] ||
+  DEFAULT_OLLAMA_BASE_URL;
+export const ANTHROPIC_AUTH_TOKEN =
+  process.env[ENV_KEY_ANTHROPIC_AUTH_TOKEN] ||
+  envConfig[ENV_KEY_ANTHROPIC_AUTH_TOKEN] ||
+  DEFAULT_OLLAMA_AUTH_TOKEN;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
@@ -85,8 +119,8 @@ export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 // Validates each candidate is a real IANA identifier before accepting.
 function resolveConfigTimezone(): string {
   const candidates = [
-    process.env.TZ,
-    envConfig.TZ,
+    process.env[ENV_KEY_TIMEZONE],
+    envConfig[ENV_KEY_TIMEZONE],
     Intl.DateTimeFormat().resolvedOptions().timeZone,
   ];
   for (const tz of candidates) {
