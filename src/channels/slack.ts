@@ -16,11 +16,36 @@ import {
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
+const THREAD_JID_DELIMITER = '::thread:';
+const SLACK_LOADING_MESSAGES = [
+  'Reviewing context...',
+  'Thinking through the reply...',
+  'Drafting a response...',
+];
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
 // (BotMessageEvent, subtype 'bot_message') so we can track our own output.
 type HandledMessageEvent = GenericMessageEvent | BotMessageEvent;
+
+function buildConversationJid(channelId: string, threadTs?: string): string {
+  if (!threadTs) return `slack:${channelId}`;
+  return `slack:${channelId}${THREAD_JID_DELIMITER}${threadTs}`;
+}
+
+function parseSlackJid(jid: string): { channelId: string; threadTs?: string } {
+  const raw = jid.replace(/^slack:/, '');
+  const [channelId, threadTs] = raw.split(THREAD_JID_DELIMITER);
+  return { channelId, threadTs };
+}
+
+function isIgnorableReactionError(err: unknown): boolean {
+  const code =
+    err && typeof err === 'object' && 'data' in err
+      ? (err as { data?: { error?: string } }).data?.error
+      : undefined;
+  return code === 'already_reacted' || code === 'no_reaction';
+}
 
 export interface SlackChannelOpts {
   onMessage: OnInboundMessage;
@@ -79,11 +104,8 @@ export class SlackChannel implements Channel {
 
       if (!msg.text) return;
 
-      // Threaded replies are flattened into the channel conversation.
-      // The agent sees them alongside channel-level messages; responses
-      // always go to the channel, not back into the thread.
-
       const jid = `slack:${msg.channel}`;
+      const conversationJid = buildConversationJid(msg.channel, msg.thread_ts);
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
       const isGroup = msg.channel_type !== 'im';
 
@@ -123,6 +145,7 @@ export class SlackChannel implements Channel {
       this.opts.onMessage(jid, {
         id: msg.ts,
         chat_jid: jid,
+        conversation_jid: conversationJid,
         sender: msg.user || msg.bot_id || '',
         sender_name: senderName,
         content,
@@ -157,7 +180,7 @@ export class SlackChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
+    const { channelId, threadTs } = parseSlackJid(jid);
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text });
@@ -171,12 +194,17 @@ export class SlackChannel implements Channel {
     try {
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          thread_ts: threadTs,
+        });
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
           await this.app.client.chat.postMessage({
             channel: channelId,
             text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+            thread_ts: threadTs,
           });
         }
       }
@@ -203,11 +231,53 @@ export class SlackChannel implements Channel {
     await this.app.stop();
   }
 
-  // Slack does not expose a typing indicator API for bots.
-  // This no-op satisfies the Channel interface so the orchestrator
-  // doesn't need channel-specific branching.
-  async setTyping(_jid: string, _isTyping: boolean): Promise<void> {
-    // no-op: Slack Bot API has no typing indicator endpoint
+  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+    const { channelId, threadTs } = parseSlackJid(jid);
+    if (!threadTs) return;
+
+    try {
+      await this.app.client.assistant.threads.setStatus({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        status: isTyping ? `${ASSISTANT_NAME} is thinking...` : '',
+        loading_messages: isTyping ? SLACK_LOADING_MESSAGES : undefined,
+      });
+    } catch (err) {
+      logger.debug({ jid, err }, 'Slack assistant status unavailable');
+    }
+  }
+
+  async setReaction(
+    jid: string,
+    messageId: string,
+    emojiName: string,
+    isActive: boolean,
+  ): Promise<void> {
+    const { channelId } = parseSlackJid(jid);
+
+    try {
+      if (isActive) {
+        await this.app.client.reactions.add({
+          channel: channelId,
+          timestamp: messageId,
+          name: emojiName,
+        });
+      } else {
+        await this.app.client.reactions.remove({
+          channel: channelId,
+          timestamp: messageId,
+          name: emojiName,
+        });
+      }
+    } catch (err) {
+      if (isIgnorableReactionError(err)) return;
+      throw err;
+    }
+  }
+
+  resolveRegisteredJid(jid: string): string {
+    const { channelId } = parseSlackJid(jid);
+    return `slack:${channelId}`;
   }
 
   /**
@@ -271,10 +341,11 @@ export class SlackChannel implements Channel {
       );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
-        const channelId = item.jid.replace(/^slack:/, '');
+        const { channelId, threadTs } = parseSlackJid(item.jid);
         await this.app.client.chat.postMessage({
           channel: channelId,
           text: item.text,
+          thread_ts: threadTs,
         });
         logger.info(
           { jid: item.jid, length: item.text.length },

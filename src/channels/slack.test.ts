@@ -42,6 +42,11 @@ vi.mock('@slack/bolt', () => ({
       auth: {
         test: vi.fn().mockResolvedValue({ user_id: 'U_BOT_123' }),
       },
+      assistant: {
+        threads: {
+          setStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      },
       chat: {
         postMessage: vi.fn().mockResolvedValue(undefined),
       },
@@ -50,6 +55,10 @@ vi.mock('@slack/bolt', () => ({
           channels: [],
           response_metadata: {},
         }),
+      },
+      reactions: {
+        add: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn().mockResolvedValue(undefined),
       },
       users: {
         info: vi.fn().mockResolvedValue({
@@ -431,7 +440,7 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('flattens threaded replies into channel messages', async () => {
+    it('routes threaded replies into a conversation-scoped JID', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -443,16 +452,16 @@ describe('SlackChannel', () => {
       });
       await triggerMessageEvent(event);
 
-      // Threaded replies are delivered as regular channel messages
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
+          conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
           content: 'Thread reply',
         }),
       );
     });
 
-    it('delivers thread parent messages normally', async () => {
+    it('keeps thread parent messages in the same conversation-scoped JID', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -467,6 +476,7 @@ describe('SlackChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
+          conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
           content: 'Thread parent',
         }),
       );
@@ -581,6 +591,24 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
         text: 'Hello',
+        thread_ts: undefined,
+      });
+    });
+
+    it('sends thread replies back into the originating thread', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.sendMessage(
+        'slack:C0123456789::thread:1704067200.000000',
+        'Threaded hello',
+      );
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'Threaded hello',
+        thread_ts: '1704067200.000000',
       });
     });
 
@@ -594,6 +622,7 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'D9876543210',
         text: 'DM message',
+        thread_ts: undefined,
       });
     });
 
@@ -636,10 +665,12 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(1, {
         channel: 'C0123456789',
         text: 'A'.repeat(4000),
+        thread_ts: undefined,
       });
       expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(2, {
         channel: 'C0123456789',
         text: 'A'.repeat(500),
+        thread_ts: undefined,
       });
     });
 
@@ -655,6 +686,7 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
         text,
+        thread_ts: undefined,
       });
     });
 
@@ -686,10 +718,12 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
         text: 'First queued',
+        thread_ts: undefined,
       });
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
         text: 'Second queued',
+        thread_ts: undefined,
       });
     });
   });
@@ -705,6 +739,13 @@ describe('SlackChannel', () => {
     it('owns slack: DM JIDs', () => {
       const channel = new SlackChannel(createTestOpts());
       expect(channel.ownsJid('slack:D0123456789')).toBe(true);
+    });
+
+    it('owns slack thread conversation JIDs', () => {
+      const channel = new SlackChannel(createTestOpts());
+      expect(
+        channel.ownsJid('slack:C0123456789::thread:1704067200.000000'),
+      ).toBe(true);
     });
 
     it('does not own WhatsApp group JIDs', () => {
@@ -769,23 +810,100 @@ describe('SlackChannel', () => {
   // --- setTyping ---
 
   describe('setTyping', () => {
-    it('resolves without error (no-op)', async () => {
+    it('is a no-op for non-thread messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
 
-      // Should not throw — Slack has no bot typing indicator API
       await expect(
         channel.setTyping('slack:C0123456789', true),
       ).resolves.toBeUndefined();
+
+      expect(
+        currentApp().client.assistant.threads.setStatus,
+      ).not.toHaveBeenCalled();
     });
 
-    it('accepts false without error', async () => {
+    it('updates Slack assistant thread status for threaded conversations', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
 
-      await expect(
-        channel.setTyping('slack:C0123456789', false),
-      ).resolves.toBeUndefined();
+      await channel.setTyping(
+        'slack:C0123456789::thread:1704067200.000000',
+        true,
+      );
+      await channel.setTyping(
+        'slack:C0123456789::thread:1704067200.000000',
+        false,
+      );
+
+      expect(
+        currentApp().client.assistant.threads.setStatus,
+      ).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          channel_id: 'C0123456789',
+          thread_ts: '1704067200.000000',
+          status: 'Jonesy is thinking...',
+        }),
+      );
+      expect(
+        currentApp().client.assistant.threads.setStatus,
+      ).toHaveBeenNthCalledWith(2, {
+        channel_id: 'C0123456789',
+        thread_ts: '1704067200.000000',
+        status: '',
+        loading_messages: undefined,
+      });
+    });
+  });
+
+  describe('setReaction', () => {
+    it('adds reactions to the source message', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setReaction?.(
+        'slack:C0123456789::thread:1704067200.000000',
+        '1704067201.000000',
+        'eyes',
+        true,
+      );
+
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1704067201.000000',
+        name: 'eyes',
+      });
+    });
+
+    it('removes reactions from the source message', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setReaction?.(
+        'slack:C0123456789',
+        '1704067201.000000',
+        'eyes',
+        false,
+      );
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1704067201.000000',
+        name: 'eyes',
+      });
+    });
+  });
+
+  describe('resolveRegisteredJid', () => {
+    it('maps threaded conversation JIDs back to the registered channel JID', () => {
+      const channel = new SlackChannel(createTestOpts());
+
+      expect(
+        channel.resolveRegisteredJid?.(
+          'slack:C0123456789::thread:1704067200.000000',
+        ),
+      ).toBe('slack:C0123456789');
     });
   });
 

@@ -25,6 +25,7 @@ beforeEach(() => {
 function store(overrides: {
   id: string;
   chat_jid: string;
+  conversation_jid?: string;
   sender: string;
   sender_name: string;
   content: string;
@@ -34,6 +35,7 @@ function store(overrides: {
   storeMessage({
     id: overrides.id,
     chat_jid: overrides.chat_jid,
+    conversation_jid: overrides.conversation_jid,
     sender: overrides.sender,
     sender_name: overrides.sender_name,
     content: overrides.content,
@@ -312,6 +314,40 @@ describe('getMessagesSince', () => {
       'Andy',
     );
     expect(msgs).toHaveLength(0);
+  });
+
+  it('isolates threaded Slack conversations by conversation_jid', () => {
+    storeChatMetadata('slack:C0123456789', '2024-01-01T00:00:00.000Z');
+
+    store({
+      id: 'thread-parent',
+      chat_jid: 'slack:C0123456789',
+      conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'Thread parent',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+    store({
+      id: 'channel-root',
+      chat_jid: 'slack:C0123456789',
+      sender: 'U2',
+      sender_name: 'Bob',
+      content: 'Channel root',
+      timestamp: '2024-01-01T00:00:02.000Z',
+    });
+
+    const threadMessages = getMessagesSince(
+      'slack:C0123456789::thread:1704067200.000000',
+      '',
+      'Andy',
+    );
+    const channelMessages = getMessagesSince('slack:C0123456789', '', 'Andy');
+
+    expect(threadMessages).toHaveLength(1);
+    expect(threadMessages[0].content).toBe('Thread parent');
+    expect(channelMessages).toHaveLength(1);
+    expect(channelMessages[0].content).toBe('Channel root');
   });
 });
 

@@ -125,6 +125,23 @@ describe('formatMessages', () => {
     expect(result).toContain('PM');
     expect(result).toContain('<context timezone="America/New_York" />');
   });
+
+  it('includes conversation metadata when messages belong to a thread conversation', () => {
+    const result = formatMessages(
+      [
+        makeMsg({
+          chat_jid: 'slack:C0123456789',
+          conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
+          content: 'thread hello',
+        }),
+      ],
+      TZ,
+    );
+
+    expect(result).toContain(
+      '<conversation jid="slack:C0123456789::thread:1704067200.000000" parent_chat_jid="slack:C0123456789" />',
+    );
+  });
 });
 
 // --- TRIGGER_PATTERN ---

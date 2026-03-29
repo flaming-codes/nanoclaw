@@ -43,6 +43,7 @@ git merge slack/main || {
 ```
 
 This merges in:
+
 - `src/channels/slack.ts` (SlackChannel class with self-registration via `registerChannel`)
 - `src/channels/slack.test.ts` (46 unit tests)
 - `import './slack.js'` appended to the channel barrel file `src/channels/index.ts`
@@ -68,10 +69,11 @@ All tests must pass (including the new Slack tests) and build must be clean befo
 If the user doesn't have a Slack app, share [SLACK_SETUP.md](SLACK_SETUP.md) which has step-by-step instructions with screenshots guidance, troubleshooting, and a token reference table.
 
 Quick summary of what's needed:
+
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
 2. Enable Socket Mode and generate an App-Level Token (`xapp-...`)
 3. Subscribe to bot events: `message.channels`, `message.groups`, `message.im`
-4. Add OAuth scopes: `chat:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`
+4. Add OAuth scopes: `chat:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`, `reactions:write`
 5. Install to workspace and copy the Bot Token (`xoxb-...`)
 
 Wait for the user to provide both tokens.
@@ -139,6 +141,7 @@ npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<ch
 Tell the user:
 
 > Send a message in your registered Slack channel:
+>
 > - For main channel: Any message works
 > - For non-main: `@<assistant-name> hello` (using the configured trigger word)
 >
@@ -169,12 +172,14 @@ tail -f logs/nanoclaw.log
 ### Bot not seeing messages in channels
 
 By default, bots only see messages in channels they've been explicitly added to. Make sure to:
+
 1. Add the bot to each channel you want it to monitor
 2. Check the bot has `channels:history` and/or `groups:history` scopes
 
 ### "missing_scope" errors
 
 If the bot logs `missing_scope` errors:
+
 1. Go to **OAuth & Permissions** in your Slack app settings
 2. Add the missing scope listed in the error message
 3. **Reinstall the app** to your workspace — scope changes require reinstallation
@@ -185,6 +190,7 @@ If the bot logs `missing_scope` errors:
 ### Getting channel ID
 
 If the channel ID is hard to find:
+
 - In Slack desktop: right-click channel → **Copy link** → extract the `C...` ID from the URL
 - In Slack web: the URL shows `https://app.slack.com/client/TXXXXXXX/C0123456789`
 - Via API: `curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" "https://slack.com/api/conversations.list" | jq '.channels[] | {id, name}'`
@@ -192,15 +198,18 @@ If the channel ID is hard to find:
 ## After Setup
 
 The Slack channel supports:
+
 - **Public channels** — Bot must be added to the channel
 - **Private channels** — Bot must be invited to the channel
 - **Direct messages** — Users can DM the bot directly
 - **Multi-channel** — Can run alongside WhatsApp or other channels (auto-enabled by credentials)
+- **Thread-aware conversations** — Replies stay inside the originating Slack thread and each thread keeps an independent agent session/cursor
+- **Message reactions** — NanoClaw can mark in-flight work and final state with emoji reactions on the triggering Slack message
+- **Assistant status in threads** — When Slack accepts Assistant thread status updates, threaded conversations show a live "thinking" indicator while the agent works
 
 ## Known Limitations
 
-- **Threads are flattened** — Threaded replies are delivered to the agent as regular channel messages. The agent sees them but has no awareness they originated in a thread. Responses always go to the channel, not back into the thread. Users in a thread will need to check the main channel for the bot's reply. Full thread-aware routing (respond in-thread) requires pipeline-wide changes: database schema, `NewMessage` type, `Channel.sendMessage` interface, and routing logic.
-- **No typing indicator** — Slack's Bot API does not expose a typing indicator endpoint. The `setTyping()` method is a no-op. Users won't see "bot is typing..." while the agent works.
+- **Assistant status is best-effort** — Slack does not expose a general bot typing indicator. NanoClaw uses `assistant.threads.setStatus` for threaded conversations when the workspace/app accepts it; if Slack rejects that API, the bot still replies normally but without a live typing/status banner.
 - **Message splitting is naive** — Long messages are split at a fixed 4000-character boundary, which may break mid-word or mid-sentence. A smarter split (on paragraph or sentence boundaries) would improve readability.
 - **No file/image handling** — The bot only processes text content. File uploads, images, and rich message blocks are not forwarded to the agent.
 - **Channel metadata sync is unbounded** — `syncChannelMetadata()` paginates through all channels the bot is a member of, but has no upper bound or timeout. Workspaces with thousands of channels may experience slow startup.

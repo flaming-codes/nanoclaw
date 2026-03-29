@@ -45,6 +45,7 @@ export interface RegisteredGroup {
 export interface NewMessage {
   id: string;
   chat_jid: string;
+  conversation_jid?: string;
   sender: string;
   sender_name: string;
   content: string;
@@ -89,6 +90,15 @@ export interface Channel {
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  // Optional: add or remove a reaction on a platform message.
+  setReaction?(
+    jid: string,
+    messageId: string,
+    emojiName: string,
+    isActive: boolean,
+  ): Promise<void>;
+  // Optional: map conversation-scoped JIDs back to registered group JIDs.
+  resolveRegisteredJid?(jid: string): string;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
 }

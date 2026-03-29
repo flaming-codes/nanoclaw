@@ -26,6 +26,7 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT,
       chat_jid TEXT,
+      conversation_jid TEXT,
       sender TEXT,
       sender_name TEXT,
       content TEXT,
@@ -36,6 +37,7 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_jid, timestamp);
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id TEXT PRIMARY KEY,
@@ -71,6 +73,10 @@ function createSchema(database: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS sessions (
       group_folder TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversation_sessions (
+      session_key TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
@@ -112,6 +118,23 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add conversation_jid column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN conversation_jid TEXT`);
+    database.exec(`UPDATE messages SET conversation_jid = chat_jid`);
+  } catch {
+    /* column already exists */
+  }
+
+  database.exec(
+    `UPDATE messages SET conversation_jid = chat_jid WHERE conversation_jid IS NULL OR conversation_jid = ''`,
+  );
+
+  database.exec(
+    `INSERT OR IGNORE INTO conversation_sessions (session_key, session_id)
+     SELECT group_folder, session_id FROM sessions`,
+  );
 
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
@@ -274,10 +297,11 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, conversation_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
+    msg.conversation_jid || msg.chat_jid,
     msg.sender,
     msg.sender_name,
     msg.content,
@@ -293,6 +317,7 @@ export function storeMessage(msg: NewMessage): void {
 export function storeMessageDirect(msg: {
   id: string;
   chat_jid: string;
+  conversation_jid?: string;
   sender: string;
   sender_name: string;
   content: string;
@@ -301,10 +326,11 @@ export function storeMessageDirect(msg: {
   is_bot_message?: boolean;
 }): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, conversation_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
+    msg.conversation_jid || msg.chat_jid,
     msg.sender,
     msg.sender_name,
     msg.content,
@@ -328,7 +354,7 @@ export function getNewMessages(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, conversation_jid, sender, sender_name, content, timestamp, is_from_me
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
         AND is_bot_message = 0 AND content NOT LIKE ?
@@ -351,7 +377,7 @@ export function getNewMessages(
 }
 
 export function getMessagesSince(
-  chatJid: string,
+  conversationJid: string,
   sinceTimestamp: string,
   botPrefix: string,
   limit: number = 200,
@@ -361,9 +387,9 @@ export function getMessagesSince(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, conversation_jid, sender, sender_name, content, timestamp, is_from_me
       FROM messages
-      WHERE chat_jid = ? AND timestamp > ?
+      WHERE COALESCE(conversation_jid, chat_jid) = ? AND timestamp > ?
         AND is_bot_message = 0 AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
       ORDER BY timestamp DESC
@@ -372,20 +398,48 @@ export function getMessagesSince(
   `;
   return db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
+    .all(
+      conversationJid,
+      sinceTimestamp,
+      `${botPrefix}:%`,
+      limit,
+    ) as NewMessage[];
 }
 
 export function getLastBotMessageTimestamp(
-  chatJid: string,
+  conversationJid: string,
   botPrefix: string,
 ): string | undefined {
   const row = db
     .prepare(
       `SELECT MAX(timestamp) as ts FROM messages
-       WHERE chat_jid = ? AND (is_bot_message = 1 OR content LIKE ?)`,
+       WHERE COALESCE(conversation_jid, chat_jid) = ?
+         AND (is_bot_message = 1 OR content LIKE ?)`,
     )
-    .get(chatJid, `${botPrefix}:%`) as { ts: string | null } | undefined;
+    .get(conversationJid, `${botPrefix}:%`) as
+    | { ts: string | null }
+    | undefined;
   return row?.ts ?? undefined;
+}
+
+export function getRecentMessagesForChat(
+  chatJid: string,
+  botPrefix: string,
+  limit: number = 200,
+): NewMessage[] {
+  const sql = `
+    SELECT * FROM (
+      SELECT id, chat_jid, conversation_jid, sender, sender_name, content, timestamp, is_from_me
+      FROM messages
+      WHERE chat_jid = ?
+        AND is_bot_message = 0 AND content NOT LIKE ?
+        AND content != '' AND content IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
+  `;
+
+  return db.prepare(sql).all(chatJid, `${botPrefix}:%`, limit) as NewMessage[];
 }
 
 export function createTask(
@@ -548,26 +602,28 @@ export function setRouterState(key: string, value: string): void {
 
 // --- Session accessors ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(sessionKey: string): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare(
+      'SELECT session_id FROM conversation_sessions WHERE session_key = ?',
+    )
+    .get(sessionKey) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(sessionKey: string, sessionId: string): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO conversation_sessions (session_key, session_id) VALUES (?, ?)',
+  ).run(sessionKey, sessionId);
 }
 
 export function getAllSessions(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT session_key, session_id FROM conversation_sessions')
+    .all() as Array<{ session_key: string; session_id: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    result[row.session_key] = row.session_id;
   }
   return result;
 }
