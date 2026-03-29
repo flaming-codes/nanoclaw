@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
+  ChannelSuggestedPrompt,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
@@ -31,6 +32,16 @@ type HandledMessageEvent = GenericMessageEvent | BotMessageEvent;
 function buildConversationJid(channelId: string, threadTs?: string): string {
   if (!threadTs) return `slack:${channelId}`;
   return `slack:${channelId}${THREAD_JID_DELIMITER}${threadTs}`;
+}
+
+function getConversationThreadTs(
+  channelType: string | undefined,
+  messageTs: string,
+  threadTs?: string,
+): string | undefined {
+  if (threadTs) return threadTs;
+  if (channelType === 'im') return undefined;
+  return messageTs;
 }
 
 function parseSlackJid(jid: string): { channelId: string; threadTs?: string } {
@@ -112,7 +123,15 @@ export class SlackChannel implements Channel {
       if (!msg.text) return;
 
       const jid = `slack:${msg.channel}`;
-      const conversationJid = buildConversationJid(msg.channel, msg.thread_ts);
+      const conversationThreadTs = getConversationThreadTs(
+        msg.channel_type,
+        msg.ts,
+        msg.thread_ts,
+      );
+      const conversationJid = buildConversationJid(
+        msg.channel,
+        conversationThreadTs,
+      );
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
       const isGroup = msg.channel_type !== 'im';
 
@@ -246,7 +265,7 @@ export class SlackChannel implements Channel {
       await this.app.client.assistant.threads.setStatus({
         channel_id: channelId,
         thread_ts: threadTs,
-        status: isTyping ? `${ASSISTANT_NAME} is thinking...` : '',
+        status: isTyping ? 'is thinking...' : '',
         loading_messages: isTyping ? SLACK_LOADING_MESSAGES : undefined,
       });
     } catch (err) {
@@ -285,6 +304,41 @@ export class SlackChannel implements Channel {
   resolveRegisteredJid(jid: string): string {
     const { channelId } = parseSlackJid(jid);
     return `slack:${channelId}`;
+  }
+
+  async setConversationTitle(jid: string, title: string): Promise<void> {
+    const { channelId, threadTs } = parseSlackJid(jid);
+    if (!threadTs) return;
+
+    try {
+      await this.app.client.assistant.threads.setTitle({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        title,
+      });
+    } catch (err) {
+      logger.debug({ jid, err }, 'Slack assistant thread title unavailable');
+    }
+  }
+
+  async setSuggestedPrompts(
+    jid: string,
+    prompts: ChannelSuggestedPrompt[],
+    title?: string,
+  ): Promise<void> {
+    const { channelId, threadTs } = parseSlackJid(jid);
+    if (!threadTs || prompts.length === 0) return;
+
+    try {
+      await this.app.client.assistant.threads.setSuggestedPrompts({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        title,
+        prompts,
+      });
+    } catch (err) {
+      logger.debug({ jid, err }, 'Slack assistant prompts unavailable');
+    }
   }
 
   /**

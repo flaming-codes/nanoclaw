@@ -81,6 +81,11 @@ export interface TaskRunLog {
 
 // --- Channel abstraction ---
 
+export interface ChannelSuggestedPrompt {
+  title: string;
+  message: string;
+}
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
@@ -96,6 +101,14 @@ export interface Channel {
     messageId: string,
     emojiName: string,
     isActive: boolean,
+  ): Promise<void>;
+  // Optional: set a Slack-style conversation title when the platform supports it.
+  setConversationTitle?(jid: string, title: string): Promise<void>;
+  // Optional: publish follow-up prompts when the platform supports it.
+  setSuggestedPrompts?(
+    jid: string,
+    prompts: ChannelSuggestedPrompt[],
+    title?: string,
   ): Promise<void>;
   // Optional: map conversation-scoped JIDs back to registered group JIDs.
   resolveRegisteredJid?(jid: string): string;

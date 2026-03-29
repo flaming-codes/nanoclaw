@@ -45,6 +45,8 @@ vi.mock('@slack/bolt', () => ({
       assistant: {
         threads: {
           setStatus: vi.fn().mockResolvedValue(undefined),
+          setSuggestedPrompts: vi.fn().mockResolvedValue(undefined),
+          setTitle: vi.fn().mockResolvedValue(undefined),
         },
       },
       chat: {
@@ -229,6 +231,7 @@ describe('SlackChannel', () => {
         expect.objectContaining({
           id: '1704067200.000000',
           chat_jid: 'slack:C0123456789',
+          conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
           sender: 'U_USER_456',
           content: 'Hello everyone',
           is_from_me: false,
@@ -517,7 +520,45 @@ describe('SlackChannel', () => {
       const event = createMessageEvent({ text: 'Normal message' });
       await triggerMessageEvent(event);
 
-      expect(opts.onMessage).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          conversation_jid: 'slack:C0123456789::thread:1704067200.000000',
+          content: 'Normal message',
+        }),
+      );
+    });
+
+    it('keeps direct messages flat when they are not explicitly threaded', async () => {
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'slack:D0123456789': {
+            name: 'DM',
+            folder: 'dm',
+            trigger: '@Jonesy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await triggerMessageEvent(
+        createMessageEvent({
+          channel: 'D0123456789',
+          channelType: 'im',
+          ts: '1704067202.000000',
+          text: 'DM hello',
+        }),
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:D0123456789',
+        expect.objectContaining({
+          conversation_jid: 'slack:D0123456789',
+          content: 'DM hello',
+        }),
+      );
     });
   });
 
@@ -870,7 +911,7 @@ describe('SlackChannel', () => {
         expect.objectContaining({
           channel_id: 'C0123456789',
           thread_ts: '1704067200.000000',
-          status: 'Jonesy is thinking...',
+          status: 'is thinking...',
         }),
       );
       expect(
@@ -931,6 +972,50 @@ describe('SlackChannel', () => {
           'slack:C0123456789::thread:1704067200.000000',
         ),
       ).toBe('slack:C0123456789');
+    });
+  });
+
+  describe('assistant thread metadata', () => {
+    it('sets a thread title for threaded conversations', async () => {
+      const channel = new SlackChannel(createTestOpts());
+
+      await channel.setConversationTitle?.(
+        'slack:C0123456789::thread:1704067200.000000',
+        'Release checklist',
+      );
+
+      expect(
+        currentApp().client.assistant.threads.setTitle,
+      ).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        thread_ts: '1704067200.000000',
+        title: 'Release checklist',
+      });
+    });
+
+    it('publishes suggested prompts for threaded conversations', async () => {
+      const channel = new SlackChannel(createTestOpts());
+
+      await channel.setSuggestedPrompts?.(
+        'slack:C0123456789::thread:1704067200.000000',
+        [
+          { title: 'Summarize', message: 'Summarize this thread.' },
+          { title: 'Action items', message: 'List the action items.' },
+        ],
+        'Try a follow-up',
+      );
+
+      expect(
+        currentApp().client.assistant.threads.setSuggestedPrompts,
+      ).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        thread_ts: '1704067200.000000',
+        title: 'Try a follow-up',
+        prompts: [
+          { title: 'Summarize', message: 'Summarize this thread.' },
+          { title: 'Action items', message: 'List the action items.' },
+        ],
+      });
     });
   });
 

@@ -149,6 +149,7 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  let latestResult: string | null = null;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -186,9 +187,7 @@ async function runTask(
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
-          result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          latestResult = streamedOutput.result;
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -203,10 +202,14 @@ async function runTask(
 
     if (closeTimer) clearTimeout(closeTimer);
 
+    if (latestResult) {
+      result = latestResult;
+      await deps.sendMessage(task.chat_jid, latestResult);
+    }
+
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
-    } else if (output.result) {
-      // Result was already forwarded to the user via the streaming callback above
+    } else if (output.result && !result) {
       result = output.result;
     }
 

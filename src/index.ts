@@ -65,6 +65,26 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
+const DEFAULT_FOLLOW_UP_PROMPTS = [
+  {
+    title: 'Summarize this',
+    message: 'Summarize the key points from this conversation so far.',
+  },
+  {
+    title: 'Action items',
+    message:
+      'List the concrete next actions or decisions from this conversation.',
+  },
+  {
+    title: 'Draft reply',
+    message: 'Draft a concise follow-up reply based on this conversation.',
+  },
+  {
+    title: 'Risk check',
+    message: 'Challenge the current plan and point out the main risks or gaps.',
+  },
+] as const;
+
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
 
@@ -193,6 +213,21 @@ function getReactionAnchor(messages: NewMessage[]): NewMessage | undefined {
     }
   }
   return undefined;
+}
+
+function buildConversationTitle(messages: NewMessage[]): string | undefined {
+  const firstUserMessage = messages.find(
+    (message) => !message.is_from_me && !message.is_bot_message,
+  );
+  if (!firstUserMessage) return undefined;
+
+  const normalized = firstUserMessage.content
+    .replace(/^@\S+\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return undefined;
+  return normalized.slice(0, 80);
 }
 
 /**
@@ -331,6 +366,9 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+  const sessionKey = getSessionKey(group, conversationJid);
+  const hasExistingSession = Boolean(sessions[sessionKey]);
+  const conversationTitle = buildConversationTitle(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -370,16 +408,29 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
       );
   }
 
+  if (!hasExistingSession && conversationTitle) {
+    await channel
+      .setConversationTitle?.(conversationJid, conversationTitle)
+      .catch((err) =>
+        logger.debug(
+          { conversationJid, err },
+          'Failed to set platform conversation title',
+        ),
+      );
+  }
+
   await channel.setTyping?.(conversationJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let latestOutputText: string | null = null;
 
   const output = await runAgent(
     group,
     prompt,
     conversationJid,
     async (result) => {
-      // Streaming output callback — called for each agent result
+      // The SDK may emit multiple successive result snapshots for a single turn.
+      // Keep only the latest clean text and send it once after the run completes.
       if (result.result) {
         const raw =
           typeof result.result === 'string'
@@ -389,8 +440,7 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await channel.sendMessage(conversationJid, text);
-          outputSentToUser = true;
+          latestOutputText = text;
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();
@@ -409,6 +459,24 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
   await channel.setTyping?.(conversationJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
+  if (latestOutputText) {
+    await channel.sendMessage(conversationJid, latestOutputText);
+    outputSentToUser = true;
+
+    await channel
+      .setSuggestedPrompts?.(
+        conversationJid,
+        [...DEFAULT_FOLLOW_UP_PROMPTS],
+        'Try a follow-up',
+      )
+      .catch((err) =>
+        logger.debug(
+          { conversationJid, err },
+          'Failed to publish platform suggested prompts',
+        ),
+      );
+  }
+
   if (reactionAnchor && channel.setReaction) {
     await channel
       .setReaction(conversationJid, reactionAnchor.id, 'eyes', false)
@@ -420,7 +488,9 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
       );
 
     const finalReaction =
-      output === 'error' || hadError ? 'x' : 'white_check_mark';
+      outputSentToUser || (output !== 'error' && !hadError)
+        ? 'white_check_mark'
+        : 'x';
     await channel
       .setReaction(conversationJid, reactionAnchor.id, finalReaction, true)
       .catch((err) =>

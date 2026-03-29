@@ -73,8 +73,9 @@ Quick summary of what's needed:
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
 2. Enable Socket Mode and generate an App-Level Token (`xapp-...`)
 3. Subscribe to bot events: `message.channels`, `message.groups`, `message.im`
-4. Add OAuth scopes: `chat:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`, `reactions:write`
-5. Install to workspace and copy the Bot Token (`xoxb-...`)
+4. If you want Slack's Assistant thread UX, enable the Agents & AI Apps feature for the app
+5. Add OAuth scopes: `chat:write`, `assistant:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`, `reactions:write`
+6. Install to workspace and copy the Bot Token (`xoxb-...`)
 
 Wait for the user to provide both tokens.
 
@@ -214,12 +215,17 @@ The Slack channel supports:
 - **Direct messages** — Users can DM the bot directly
 - **Multi-channel** — Can run alongside WhatsApp or other channels (auto-enabled by credentials)
 - **Thread-aware conversations** — Replies stay inside the originating Slack thread and each thread keeps an independent agent session/cursor
+- **Consistent channel threading** — Channel and private-channel messages are handled in a dedicated reply thread anchored on the triggering message, so replies and status stay attached to one conversation
 - **Message reactions** — NanoClaw can mark in-flight work and final state with emoji reactions on the triggering Slack message
 - **Assistant status in threads** — When Slack accepts Assistant thread status updates, threaded conversations show a live "thinking" indicator while the agent works
+- **Assistant thread metadata** — NanoClaw can best-effort set thread titles and suggested follow-up prompts when the Slack app has Assistant access enabled
+- **Duplicate suppression** — Multiple SDK result snapshots are collapsed down to the latest reply before posting, avoiding near-duplicate Slack messages
 
 ## Known Limitations
 
 - **Assistant status is best-effort** — Slack does not expose a general bot typing indicator. NanoClaw uses `assistant.threads.setStatus` for threaded conversations when the workspace/app accepts it; if Slack rejects that API, the bot still replies normally but without a live typing/status banner.
+- **Assistant titles and prompts are best-effort** — `assistant.threads.setTitle` and `assistant.threads.setSuggestedPrompts` require Assistant-capable Slack app configuration and may be ignored by workspaces that have not enabled those features.
+- **No token-level text streaming yet** — NanoClaw currently collapses multiple SDK result snapshots into one final Slack reply instead of rendering token-by-token text streaming, because the current agent SDK output is snapshot-oriented rather than append-only.
 - **Message splitting is naive** — Long messages are split at a fixed 4000-character boundary, which may break mid-word or mid-sentence. A smarter split (on paragraph or sentence boundaries) would improve readability.
 - **No file/image handling** — The bot only processes text content. File uploads, images, and rich message blocks are not forwarded to the agent.
 - **Channel metadata sync is unbounded** — `syncChannelMetadata()` paginates through all channels the bot is a member of, but has no upper bound or timeout. Workspaces with thousands of channels may experience slow startup.
