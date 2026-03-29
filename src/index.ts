@@ -55,6 +55,7 @@ import {
   startRemoteControl,
   stopRemoteControl,
 } from './remote-control.js';
+import { acquireInstanceLock, releaseInstanceLock } from './instance-lock.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -783,6 +784,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    releaseInstanceLock();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -960,7 +962,15 @@ const isDirectRun =
     new URL(`file://${process.argv[1]}`).pathname;
 
 if (isDirectRun) {
+  try {
+    acquireInstanceLock();
+  } catch (err) {
+    logger.error({ err }, 'Failed to acquire NanoClaw instance lock');
+    process.exit(1);
+  }
+
   main().catch((err) => {
+    releaseInstanceLock();
     logger.error({ err }, 'Failed to start NanoClaw');
     process.exit(1);
   });
