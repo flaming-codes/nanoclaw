@@ -37,7 +37,6 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_jid, timestamp);
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id TEXT PRIMARY KEY,
@@ -129,6 +128,10 @@ function createSchema(database: Database.Database): void {
 
   database.exec(
     `UPDATE messages SET conversation_jid = chat_jid WHERE conversation_jid IS NULL OR conversation_jid = ''`,
+  );
+
+  database.exec(
+    `CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_jid, timestamp)`,
   );
 
   database.exec(
