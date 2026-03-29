@@ -119,9 +119,59 @@ function getConversationJid(message: NewMessage): string {
   return message.conversation_jid || message.chat_jid;
 }
 
-function resolveRegisteredChatJid(jid: string): string {
+function getWildcardGroupJid(jid: string): string | undefined {
+  const match = /^([^:]+):/.exec(jid);
+  if (!match) return undefined;
+
+  const wildcardJid = `${match[1]}:*`;
+  return registeredGroups[wildcardJid] ? wildcardJid : undefined;
+}
+
+function getRegisteredGroupMatch(
+  jid: string,
+): { jid: string; group: RegisteredGroup } | undefined {
   const channel = findChannel(channels, jid);
-  return channel?.resolveRegisteredJid?.(jid) || jid;
+  const resolvedJid = channel?.resolveRegisteredJid?.(jid) || jid;
+
+  const exactGroup = registeredGroups[resolvedJid];
+  if (exactGroup) {
+    return { jid: resolvedJid, group: exactGroup };
+  }
+
+  const wildcardJid = getWildcardGroupJid(resolvedJid);
+  if (wildcardJid) {
+    return { jid: wildcardJid, group: registeredGroups[wildcardJid] };
+  }
+
+  return undefined;
+}
+
+function isRegisteredChatJid(jid: string): boolean {
+  return getRegisteredGroupMatch(jid) !== undefined;
+}
+
+function getTrackedChatJids(): string[] {
+  const trackedJids = new Set<string>();
+
+  for (const jid of Object.keys(registeredGroups)) {
+    if (!jid.endsWith(':*')) {
+      trackedJids.add(jid);
+    }
+  }
+
+  for (const chat of getAllChats()) {
+    if (chat.jid === '__group_sync__') continue;
+    const wildcardJid = chat.channel ? `${chat.channel}:*` : undefined;
+    if (wildcardJid && registeredGroups[wildcardJid]) {
+      trackedJids.add(chat.jid);
+    }
+  }
+
+  return [...trackedJids];
+}
+
+function resolveRegisteredChatJid(jid: string): string {
+  return getRegisteredGroupMatch(jid)?.jid || jid;
 }
 
 function getSessionKey(
@@ -224,7 +274,6 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
  */
 export function getAvailableGroups(): import('./container-runner.js').AvailableGroup[] {
   const chats = getAllChats();
-  const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
     .filter((c) => c.jid !== '__group_sync__' && c.is_group)
@@ -232,7 +281,7 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
       jid: c.jid,
       name: c.name,
       lastActivity: c.last_message_time,
-      isRegistered: registeredJids.has(c.jid),
+      isRegistered: isRegisteredChatJid(c.jid),
     }));
 }
 
@@ -504,7 +553,7 @@ async function startMessageLoop(): Promise<void> {
 
   while (true) {
     try {
-      const jids = Object.keys(registeredGroups);
+      const jids = getTrackedChatJids();
       const { messages, newTimestamp } = getNewMessages(
         jids,
         lastTimestamp,
@@ -609,7 +658,10 @@ async function startMessageLoop(): Promise<void> {
  * Handles crash between advancing lastTimestamp and processing messages.
  */
 function recoverPendingMessages(): void {
-  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+  for (const chatJid of getTrackedChatJids()) {
+    const match = getRegisteredGroupMatch(chatJid);
+    if (!match) continue;
+
     const recent = getRecentMessagesForChat(
       chatJid,
       ASSISTANT_NAME,
@@ -629,7 +681,7 @@ function recoverPendingMessages(): void {
 
     for (const [conversationJid, pendingCount] of pendingByConversation) {
       logger.info(
-        { group: group.name, conversationJid, pendingCount },
+        { group: match.group.name, conversationJid, pendingCount },
         'Recovery: found unprocessed messages',
       );
       queue.enqueueMessageCheck(conversationJid);
@@ -672,7 +724,7 @@ async function main(): Promise<void> {
     chatJid: string,
     msg: NewMessage,
   ): Promise<void> {
-    const group = registeredGroups[chatJid];
+    const group = getRegisteredGroupMatch(chatJid)?.group;
     if (!group?.isMain) {
       logger.warn(
         { chatJid, sender: msg.sender },
@@ -711,6 +763,8 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      const groupMatch = getRegisteredGroupMatch(chatJid);
+
       // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
@@ -721,15 +775,15 @@ async function main(): Promise<void> {
       }
 
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+      if (!msg.is_from_me && !msg.is_bot_message && groupMatch) {
         const cfg = loadSenderAllowlist();
         if (
-          shouldDropMessage(chatJid, cfg) &&
-          !isSenderAllowed(chatJid, msg.sender, cfg)
+          shouldDropMessage(groupMatch.jid, cfg) &&
+          !isSenderAllowed(groupMatch.jid, msg.sender, cfg)
         ) {
           if (cfg.logDenied) {
             logger.debug(
-              { chatJid, sender: msg.sender },
+              { chatJid: groupMatch.jid, sender: msg.sender },
               'sender-allowlist: dropping message (drop mode)',
             );
           }

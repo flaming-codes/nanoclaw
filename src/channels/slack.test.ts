@@ -254,6 +254,33 @@ describe('SlackChannel', () => {
       expect(opts.onMessage).not.toHaveBeenCalled();
     });
 
+    it('delivers messages for any Slack channel when slack:* is registered', async () => {
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'slack:*': {
+            name: 'All Slack',
+            folder: 'slack-all',
+            trigger: '@Jonesy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await triggerMessageEvent(
+        createMessageEvent({ channel: 'C9999999999', text: 'Catch-all' }),
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C9999999999',
+        expect.objectContaining({
+          chat_jid: 'slack:C9999999999',
+          content: 'Catch-all',
+        }),
+      );
+    });
+
     it('skips non-text subtypes (channel_join, etc.)', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);

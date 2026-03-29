@@ -53,6 +53,13 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+function hasRegisteredSlackTarget(
+  groups: Record<string, RegisteredGroup>,
+  jid: string,
+): boolean {
+  return Boolean(groups[jid] || groups['slack:*']);
+}
+
 export class SlackChannel implements Channel {
   name = 'slack';
 
@@ -114,7 +121,7 @@ export class SlackChannel implements Channel {
 
       // Only deliver full messages for registered groups
       const groups = this.opts.registeredGroups();
-      if (!groups[jid]) return;
+      if (!hasRegisteredSlackTarget(groups, jid)) return;
 
       const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 

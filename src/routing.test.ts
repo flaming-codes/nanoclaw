@@ -105,6 +105,41 @@ describe('getAvailableGroups', () => {
     expect(unreg?.isRegistered).toBe(false);
   });
 
+  it('marks Slack chats as registered when slack:* exists', () => {
+    storeChatMetadata(
+      'slack:C0123456789',
+      '2024-01-01T00:00:01.000Z',
+      'General',
+      'slack',
+      true,
+    );
+    storeChatMetadata(
+      'slack:C9999999999',
+      '2024-01-01T00:00:02.000Z',
+      'Random',
+      'slack',
+      true,
+    );
+
+    _setRegisteredGroups({
+      'slack:*': {
+        name: 'All Slack',
+        folder: 'slack-all',
+        trigger: '@Andy',
+        added_at: '2024-01-01T00:00:00.000Z',
+      },
+    });
+
+    const groups = getAvailableGroups();
+
+    expect(
+      groups.find((g) => g.jid === 'slack:C0123456789')?.isRegistered,
+    ).toBe(true);
+    expect(
+      groups.find((g) => g.jid === 'slack:C9999999999')?.isRegistered,
+    ).toBe(true);
+  });
+
   it('returns groups ordered by most recent activity', () => {
     storeChatMetadata(
       'old@g.us',

@@ -122,10 +122,18 @@ Wait for the user to provide the channel ID.
 
 The channel ID, name, and folder name are needed. Use `npx tsx setup/index.ts --step register` with the appropriate flags.
 
+If you want one catch-all Slack registration instead of registering each channel explicitly, use the special JID `slack:*`. That routes every Slack conversation the bot can see through a single NanoClaw group.
+
 For a main channel (responds to all messages):
 
 ```bash
 npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_main" --trigger "@${ASSISTANT_NAME}" --channel slack --no-trigger-required --is-main
+```
+
+For a catch-all main registration (all Slack channels and DMs visible to the bot):
+
+```bash
+npx tsx setup/index.ts --step register -- --jid "slack:*" --name "Slack Workspace" --folder "slack_main" --trigger "@${ASSISTANT_NAME}" --channel slack --no-trigger-required --is-main
 ```
 
 For additional channels (trigger-only):
@@ -133,6 +141,8 @@ For additional channels (trigger-only):
 ```bash
 npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_<channel-name>" --trigger "@${ASSISTANT_NAME}" --channel slack
 ```
+
+With `slack:*`, you do not need to register each channel ID separately. The bot still must be added or invited to each Slack conversation it should see.
 
 ## Phase 5: Verify
 
