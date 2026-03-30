@@ -64,7 +64,12 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, ChannelTextStream, NewMessage, RegisteredGroup } from './types.js';
+import {
+  Channel,
+  ChannelTextStream,
+  NewMessage,
+  RegisteredGroup,
+} from './types.js';
 import { logger } from './logger.js';
 
 const DEFAULT_FOLLOW_UP_PROMPTS = [
@@ -432,12 +437,14 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
 
   const finalizeCurrentReply = async () => {
     if (activeTextStream) {
-      await activeTextStream.stop().catch((err) =>
-        logger.debug(
-          { conversationJid, err },
-          'Failed to stop Slack text stream cleanly',
-        ),
-      );
+      await activeTextStream
+        .stop()
+        .catch((err) =>
+          logger.debug(
+            { conversationJid, err },
+            'Failed to stop Slack text stream cleanly',
+          ),
+        );
       activeTextStream = null;
       streamedText = '';
       latestOutputText = null;
