@@ -171,7 +171,8 @@ tail -f logs/nanoclaw.log
 1. Check `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set in `.env` AND synced to `data/env/env`
 2. Check channel is registered: `sqlite3 store/messages.db "SELECT * FROM registered_groups WHERE jid LIKE 'slack:%'"`
 3. For non-main channels: message must include trigger pattern
-4. Service is running: `launchctl list | grep nanoclaw`
+4. Direct messages require either `slack:*`, an explicit DM registration, or exactly one Slack main registration to act as the DM fallback target
+5. Service is running: `launchctl list | grep nanoclaw`
 
 ### Bot connected but not receiving messages
 
@@ -212,11 +213,11 @@ The Slack channel supports:
 
 - **Public channels** — Bot must be added to the channel
 - **Private channels** — Bot must be invited to the channel
-- **Direct messages** — Users can DM the bot directly
+- **Direct messages** — Users can DM the bot directly. DMs work with `slack:*`, with an explicitly registered DM JID, or by falling back to a single Slack main registration when exactly one exists
 - **Multi-channel** — Can run alongside WhatsApp or other channels (auto-enabled by credentials)
 - **Thread-aware conversations** — Replies stay inside the originating Slack thread and each thread keeps an independent agent session/cursor
 - **Consistent channel threading** — Channel and private-channel messages are handled in a dedicated reply thread anchored on the triggering message, so replies and status stay attached to one conversation
-- **Message reactions** — NanoClaw can mark in-flight work and final state with emoji reactions on the triggering Slack message
+- **Message reactions** — Slack emoji reactions are available as an opt-in channel capability for explicit special events, but NanoClaw does not apply them automatically to every reply
 - **Assistant status in threads** — When Slack accepts Assistant thread status updates, threaded conversations show a live "thinking" indicator while the agent works
 - **Assistant thread metadata** — NanoClaw can best-effort set thread titles and suggested follow-up prompts when the Slack app has Assistant access enabled
 - **Duplicate suppression** — Multiple SDK result snapshots are collapsed down to the latest reply before posting, avoiding near-duplicate Slack messages

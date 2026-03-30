@@ -86,6 +86,11 @@ export interface ChannelSuggestedPrompt {
   message: string;
 }
 
+export interface ChannelTextStream {
+  append(text: string): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
@@ -110,6 +115,11 @@ export interface Channel {
     prompts: ChannelSuggestedPrompt[],
     title?: string,
   ): Promise<void>;
+  // Optional: start a platform-native text stream for incremental replies.
+  startTextStream?(
+    jid: string,
+    recipientUserId?: string,
+  ): Promise<ChannelTextStream | undefined>;
   // Optional: map conversation-scoped JIDs back to registered group JIDs.
   resolveRegisteredJid?(jid: string): string;
   // Optional: sync group/chat names from the platform.

@@ -49,6 +49,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { getRegisteredGroupMatchForJid } from './registered-groups.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -63,7 +64,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, ChannelTextStream, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 const DEFAULT_FOLLOW_UP_PROMPTS = [
@@ -85,6 +86,8 @@ const DEFAULT_FOLLOW_UP_PROMPTS = [
     message: 'Challenge the current plan and point out the main risks or gaps.',
   },
 ] as const;
+
+const CHAT_CLOSE_DELAY_MS = 10_000;
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -140,31 +143,12 @@ function getConversationJid(message: NewMessage): string {
   return message.conversation_jid || message.chat_jid;
 }
 
-function getWildcardGroupJid(jid: string): string | undefined {
-  const match = /^([^:]+):/.exec(jid);
-  if (!match) return undefined;
-
-  const wildcardJid = `${match[1]}:*`;
-  return registeredGroups[wildcardJid] ? wildcardJid : undefined;
-}
-
 function getRegisteredGroupMatch(
   jid: string,
 ): { jid: string; group: RegisteredGroup } | undefined {
   const channel = findChannel(channels, jid);
   const resolvedJid = channel?.resolveRegisteredJid?.(jid) || jid;
-
-  const exactGroup = registeredGroups[resolvedJid];
-  if (exactGroup) {
-    return { jid: resolvedJid, group: exactGroup };
-  }
-
-  const wildcardJid = getWildcardGroupJid(resolvedJid);
-  if (wildcardJid) {
-    return { jid: wildcardJid, group: registeredGroups[wildcardJid] };
-  }
-
-  return undefined;
+  return getRegisteredGroupMatchForJid(registeredGroups, resolvedJid);
 }
 
 function isRegisteredChatJid(jid: string): boolean {
@@ -182,8 +166,7 @@ function getTrackedChatJids(): string[] {
 
   for (const chat of getAllChats()) {
     if (chat.jid === '__group_sync__') continue;
-    const wildcardJid = chat.channel ? `${chat.channel}:*` : undefined;
-    if (wildcardJid && registeredGroups[wildcardJid]) {
+    if (isRegisteredChatJid(chat.jid)) {
       trackedJids.add(chat.jid);
     }
   }
@@ -206,7 +189,9 @@ function getSessionKey(
     : `${group.folder}:${conversationJid}`;
 }
 
-function getReactionAnchor(messages: NewMessage[]): NewMessage | undefined {
+function getLatestInboundMessage(
+  messages: NewMessage[],
+): NewMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message.is_from_me && !message.is_bot_message) {
@@ -397,17 +382,7 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  const reactionAnchor = getReactionAnchor(missedMessages);
-  if (reactionAnchor && channel.setReaction) {
-    await channel
-      .setReaction(conversationJid, reactionAnchor.id, 'eyes', true)
-      .catch((err) =>
-        logger.debug(
-          { conversationJid, reaction: 'eyes', err },
-          'Failed to add Slack processing reaction',
-        ),
-      );
-  }
+  const latestInboundMessage = getLatestInboundMessage(missedMessages);
 
   if (!hasExistingSession && conversationTitle) {
     await channel
@@ -424,46 +399,23 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
   let latestOutputText: string | null = null;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeTextStream: ChannelTextStream | null = null;
+  let streamedText = '';
+  let streamDisabled = false;
 
-  const output = await runAgent(
-    group,
-    prompt,
-    conversationJid,
-    async (result) => {
-      // The SDK may emit multiple successive result snapshots for a single turn.
-      // Keep only the latest clean text and send it once after the run completes.
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-        if (text) {
-          latestOutputText = text;
-        }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
-      }
+  const scheduleClose = () => {
+    if (closeTimer) return;
+    closeTimer = setTimeout(() => {
+      logger.debug(
+        { conversationJid },
+        'Closing chat container after query completion',
+      );
+      queue.closeStdin(conversationJid);
+    }, CHAT_CLOSE_DELAY_MS);
+  };
 
-      if (result.status === 'success') {
-        queue.notifyIdle(conversationJid);
-      }
-
-      if (result.status === 'error') {
-        hadError = true;
-      }
-    },
-  );
-
-  await channel.setTyping?.(conversationJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
-
-  if (latestOutputText) {
-    await channel.sendMessage(conversationJid, latestOutputText);
-    outputSentToUser = true;
-
+  const publishSuggestedPrompts = async () => {
     await channel
       .setSuggestedPrompts?.(
         conversationJid,
@@ -476,31 +428,116 @@ async function processGroupMessages(conversationJid: string): Promise<boolean> {
           'Failed to publish platform suggested prompts',
         ),
       );
-  }
+  };
 
-  if (reactionAnchor && channel.setReaction) {
-    await channel
-      .setReaction(conversationJid, reactionAnchor.id, 'eyes', false)
-      .catch((err) =>
+  const finalizeCurrentReply = async () => {
+    if (activeTextStream) {
+      await activeTextStream.stop().catch((err) =>
         logger.debug(
-          { conversationJid, reaction: 'eyes', err },
-          'Failed to remove Slack processing reaction',
+          { conversationJid, err },
+          'Failed to stop Slack text stream cleanly',
         ),
       );
+      activeTextStream = null;
+      streamedText = '';
+      latestOutputText = null;
+      outputSentToUser = true;
+      await publishSuggestedPrompts();
+      return;
+    }
 
-    const finalReaction =
-      outputSentToUser || (output !== 'error' && !hadError)
-        ? 'white_check_mark'
-        : 'x';
-    await channel
-      .setReaction(conversationJid, reactionAnchor.id, finalReaction, true)
-      .catch((err) =>
-        logger.debug(
-          { conversationJid, reaction: finalReaction, err },
-          'Failed to apply final Slack reaction',
-        ),
-      );
-  }
+    if (!latestOutputText) return;
+
+    await channel.sendMessage(conversationJid, latestOutputText);
+    latestOutputText = null;
+    outputSentToUser = true;
+    await publishSuggestedPrompts();
+  };
+
+  const output = await runAgent(
+    group,
+    prompt,
+    conversationJid,
+    async (result) => {
+      if (closeTimer && result.result) {
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+
+      // The SDK may emit multiple successive result snapshots for a single turn.
+      // Keep the latest clean text and publish it when the SDK emits the
+      // end-of-query success marker instead of waiting for container teardown.
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          latestOutputText = text;
+
+          if (!streamDisabled && channel.startTextStream) {
+            try {
+              if (!activeTextStream) {
+                activeTextStream =
+                  (await channel.startTextStream(
+                    conversationJid,
+                    latestInboundMessage?.sender,
+                  )) || null;
+              }
+
+              if (activeTextStream) {
+                if (!text.startsWith(streamedText)) {
+                  streamDisabled = true;
+                  activeTextStream = null;
+                  streamedText = '';
+                  logger.debug(
+                    { conversationJid },
+                    'Platform text stream disabled for non-append-only output',
+                  );
+                } else {
+                  const delta = text.slice(streamedText.length);
+                  if (delta) {
+                    await activeTextStream.append(delta);
+                    streamedText = text;
+                    outputSentToUser = true;
+                  }
+                }
+              }
+            } catch (err) {
+              streamDisabled = true;
+              activeTextStream = null;
+              streamedText = '';
+              logger.debug(
+                { conversationJid, err },
+                'Failed to use platform text streaming, falling back to final message delivery',
+              );
+            }
+          }
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
+      }
+
+      if (result.status === 'success' && result.result === null) {
+        queue.notifyIdle(conversationJid);
+        await channel.setTyping?.(conversationJid, false);
+        await finalizeCurrentReply();
+        scheduleClose();
+      }
+
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
+
+  await channel.setTyping?.(conversationJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
+  if (closeTimer) clearTimeout(closeTimer);
+  await finalizeCurrentReply();
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —

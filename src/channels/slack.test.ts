@@ -40,7 +40,10 @@ vi.mock('@slack/bolt', () => ({
 
     client = {
       auth: {
-        test: vi.fn().mockResolvedValue({ user_id: 'U_BOT_123' }),
+        test: vi.fn().mockResolvedValue({
+          user_id: 'U_BOT_123',
+          team_id: 'T_WORKSPACE_123',
+        }),
       },
       assistant: {
         threads: {
@@ -52,6 +55,10 @@ vi.mock('@slack/bolt', () => ({
       chat: {
         postMessage: vi.fn().mockResolvedValue(undefined),
       },
+      chatStream: vi.fn(() => ({
+        append: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+      })),
       conversations: {
         list: vi.fn().mockResolvedValue({
           channels: [],
@@ -560,6 +567,40 @@ describe('SlackChannel', () => {
         }),
       );
     });
+
+    it('delivers direct messages when a single Slack main registration exists', async () => {
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'slack:C0123456789': {
+            name: 'Slack Main',
+            folder: 'slack_main',
+            trigger: '@Jonesy',
+            added_at: '2024-01-01T00:00:00.000Z',
+            isMain: true,
+            requiresTrigger: false,
+          },
+        })),
+      });
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await triggerMessageEvent(
+        createMessageEvent({
+          channel: 'D0123456789',
+          channelType: 'im',
+          ts: '1704067202.000000',
+          text: 'DM via main registration',
+        }),
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:D0123456789',
+        expect.objectContaining({
+          conversation_jid: 'slack:D0123456789',
+          content: 'DM via main registration',
+        }),
+      );
+    });
   });
 
   // --- @mention translation ---
@@ -1016,6 +1057,44 @@ describe('SlackChannel', () => {
           { title: 'Action items', message: 'List the action items.' },
         ],
       });
+    });
+
+    it('starts a native text stream for threaded conversations', async () => {
+      const channel = new SlackChannel(createTestOpts());
+
+      await channel.connect();
+
+      const stream = await channel.startTextStream?.(
+        'slack:C0123456789::thread:1704067200.000000',
+        'U_USER_456',
+      );
+
+      expect(currentApp().client.chatStream).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        thread_ts: '1704067200.000000',
+        recipient_team_id: 'T_WORKSPACE_123',
+        recipient_user_id: 'U_USER_456',
+        buffer_size: 64,
+      });
+
+      await stream?.append('Partial reply');
+      await stream?.stop();
+
+      const streamer = vi.mocked(currentApp().client.chatStream).mock.results[0]
+        ?.value;
+      expect(streamer.append).toHaveBeenCalledWith({
+        markdown_text: 'Partial reply',
+      });
+      expect(streamer.stop).toHaveBeenCalled();
+    });
+
+    it('does not start a native text stream for non-thread conversations', async () => {
+      const channel = new SlackChannel(createTestOpts());
+
+      const stream = await channel.startTextStream?.('slack:D0123456789');
+
+      expect(stream).toBeUndefined();
+      expect(currentApp().client.chatStream).not.toHaveBeenCalled();
     });
   });
 

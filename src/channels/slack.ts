@@ -5,10 +5,12 @@ import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { hasRegisteredGroupTarget } from '../registered-groups.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
   ChannelSuggestedPrompt,
+  ChannelTextStream,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
@@ -64,18 +66,12 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-function hasRegisteredSlackTarget(
-  groups: Record<string, RegisteredGroup>,
-  jid: string,
-): boolean {
-  return Boolean(groups[jid] || groups['slack:*']);
-}
-
 export class SlackChannel implements Channel {
   name = 'slack';
 
   private app: App;
   private botUserId: string | undefined;
+  private teamId: string | undefined;
   private connected = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -140,7 +136,7 @@ export class SlackChannel implements Channel {
 
       // Only deliver full messages for registered groups
       const groups = this.opts.registeredGroups();
-      if (!hasRegisteredSlackTarget(groups, jid)) return;
+      if (!hasRegisteredGroupTarget(groups, jid)) return;
 
       const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
@@ -191,6 +187,7 @@ export class SlackChannel implements Channel {
     try {
       const auth = await this.app.client.auth.test();
       this.botUserId = auth.user_id as string;
+      this.teamId = auth.team_id as string | undefined;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
       logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
@@ -339,6 +336,32 @@ export class SlackChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Slack assistant prompts unavailable');
     }
+  }
+
+  async startTextStream(
+    jid: string,
+    recipientUserId?: string,
+  ): Promise<ChannelTextStream | undefined> {
+    const { channelId, threadTs } = parseSlackJid(jid);
+    if (!threadTs) return undefined;
+
+    const streamer = this.app.client.chatStream({
+      channel: channelId,
+      thread_ts: threadTs,
+      recipient_team_id: this.teamId,
+      recipient_user_id: recipientUserId,
+      buffer_size: 64,
+    });
+
+    return {
+      append: async (text: string) => {
+        if (!text) return;
+        await streamer.append({ markdown_text: text });
+      },
+      stop: async () => {
+        await streamer.stop();
+      },
+    };
   }
 
   /**
